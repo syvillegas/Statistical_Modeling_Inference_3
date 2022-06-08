@@ -1,0 +1,230 @@
+---
+title: "Statistical Modelling and Inference - Seminar 5"
+author: "Sergio-Yersi Villegas Pelegrín"
+output:
+  html_notebook:
+    code_folding: hide
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE, results='hide'}
+#install.packages(c("quanteda","quanteda.textplots","stm","lda", "servr", "cld3"))
+#install.packages("topicmodels")
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE, results='hide'}
+# We first load the required libraries in order to be able to run the code:
+library(readr)
+library(tidyverse)
+library(quanteda) # quantitative analysis of textual data  (https://quanteda.io/articles/quickstart.html)
+library(quanteda.textplots) # complementary to quanteda, for visualization
+library(cld3) # for language detection
+library(lda) # implementation of Latent Dirichlet Allocation
+library(servr) # will be used for visualization
+library(topicmodels) # alternative to lda, several topic models included
+library(stm) # for structural topic modeling
+```
+
+# Data managing
+We load the speeches made by legislators in the UK House of Commons in the 2014 calendar year, with which we will be working with throughout this seminar, regarding Structural topic modeling in order to understand how parliamentary speeches varies by the gender of the MP.
+```{r}
+# We load the data that will be used
+PATH <- '~/Desktop/TERM 1/SMI/seminar5/data'
+load("~/Desktop/TERM 1/SMI/seminar5/data/hoc_speeches.RData")
+```
+
+## Summary statistics
+
+Now, we can perform some summary statistics to see the general patterns and a quick explanation of our data.
+
+```{r}
+summary(speeches)
+```
+
+We can see that there is a signficant, gender-wise class imbalance gender-wise, since female speeches are just a 22% while male speeches correspond to the 78% out of the 7590 speeches contained in the dataset. 
+
+Then, we can check for duplicated speeches contained in the data and see that there are, in fact, some duplicated ones: 7139 unique speeches versus the original 7590 ones.
+```{r}
+length(unique(speeches$speech))
+```
+
+However, since they may have been performed by different members of the party (therefore, maybe performed by men and women), we will not drop them, just to make sure we do not miss information by furtherly imbalancing the dataset.
+
+Finally, we can check the number of speeches performed by each party in the UK House of Commons:
+
+```{r}
+speeches %>% 
+  group_by(party) %>%
+    summarise(observations = length(party))
+```
+where we can see that 56% have been performed by the Conservative party, 34% by the Labour party and 10% by the Liberal Democrat party, therefore checking which party may have for representatives in the House of Commons (hence, more decision power). 
+
+## Creating and analyzing the corpus data
+Following, we will use the functions in the quanteda package to turn this data into a corpus object. We will save the speeches data with the meta parameter of the corpus() function, so we can later access it. Furthermore, we can also check all the detected languages of the speeches, which are logically all in english. 
+
+```{r}
+speeches_corpus <- corpus(speeches, text_field = 'speech', meta = speeches)
+languages <- detect_language(speeches_corpus)
+table(languages)
+```
+
+To study the corpus more thoroughly, we can plot the length of each document with the ntoken() function. Here, with the not-cleaned original data, tokens will be words, punctuation characters, numbers… Let's plot it and further analyze it.
+
+
+```{r results='hide'}
+ntokens_speeches <- ntoken(speeches_corpus)
+data.frame(ntokens_speeches) %>% ggplot(aes(ntokens_speeches)) + geom_histogram() + xlab('Number of tokens')
+```
+First, we can see that there are many speeches with less than 250 tokens, approximately (where a lot of them seem to have a null-lenght). Furthermore, we can also see that the maximum amount of tokens that speeches have is around 2500 tokens. However, the amount of speeches with this high number of tokens is very low. Therefore, all things considered, we will filter the speeches, so that we just use those with a number of tokens between 50 and 1000 tokens.
+
+```{r}
+docs_length50_1000 <- names(ntokens_speeches[(ntokens_speeches>=50) & (ntokens_speeches<=1000)])
+speeches_corpus <- speeches_corpus[names(speeches_corpus) %in% docs_length50_1000]
+
+```
+
+We can now furtherly perform some summary statistics on the filtered data, and see the main features of each speech. We will just show the 10 first elements, so that the output is not unnecessarily long.
+
+```{r}
+summary(speeches_corpus, 10)
+```
+
+## Cleaning the data
+Now, with the filtered data we want to work with, we will firstly turn this corpus into a tokens object and then into a document-feature matrix, with all the preprocessing steps applied to our dataset. More particularly, we will use the following data-cleaning steps:
+
+  - Punctuation, symbols and numbers removal
+  - Stopwords removal: we will drop short and s. In order to select them,     we will firstly consider the most common english words (with the function stopwords("en")), and then, we will keep     adding them to the list as we keep searching for the most frequent words.
+  - Stemming: we just keep a generic part of a word that may appear in many several specific words, in order to reduce       dimensionality and .
+  - Infrequent terms removal: we get rid of the words that rarely appear.
+  - n_grams: takes into consideration each word and the combination with all other words; that is, n_grams of n=1 and        n=2.
+
+Then, we can display a small portion of the resulting cleaned data, where we can see the number of times each of the showed words appear in the first considered texts:
+```{r}
+eng_sw <- stopwords("en")
+our_stopwords <- c(eng_sw, 'hon', 'can','s','make','need','one','want','say','take','sure','however',
+                   'may','much','must','now','go','use','two','get','said','made','also','look','put','see','give')
+our_stopwords
+```
+
+```{r}
+dfm_speeches <- tokens(speeches_corpus, remove_punct = TRUE, 
+                                          remove_symbols = TRUE, remove_numbers = TRUE) %>% 
+                            tokens_remove(our_stopwords) %>%
+                            tokens_wordstem() %>%
+                            tokens_ngrams(n = c(1,2)) %>% 
+                            dfm() %>% 
+                            dfm_tolower() %>% 
+                            dfm_trim(min_termfreq = 5, min_docfreq = 0.0025, docfreq_type = "prop")
+dfm_speeches
+```
+
+
+Now, we can plot the length of each document again, now with the filtered, cleaned and preprocessed data, and see the changes we have done:
+
+```{r results='hide'}
+ntokens_speeches_2 <- ntoken(dfm_speeches)
+data.frame(ntokens_speeches_2) %>% ggplot(aes(ntokens_speeches_2)) + geom_histogram() + xlab('Number of tokens')
+```
+In order to know if there are more meaningless words that have a high frequency of appearence in the documents, we can show the top $n$ most usual words: by brute force, we can keep appending them to the list and re-run the code, until we find a set of most frequent words that could be considered as meaningful.
+
+```{r}
+topfeatures(dfm_speeches, 50)
+```
+
+## Word cloud
+Once we have already completely cleaned our data, with all the considered stopwords, we can plot the resulting word cloud, with the textplot_wordcloud() function, and see what we obtain.
+
+```{r warning=FALSE}
+textplot_wordcloud(dfm_speeches, random_order = FALSE, rotation = 0.25, 
+    color = RColorBrewer::brewer.pal(9, "Set2"),max_words =100,max_size = 3)
+```
+
+### Bigram word cloud
+
+Now, we will additionally plot a word cloud just for bigrams, in order to see the most frequent-related words. Hence, we firstly create the document-feature matrix for bigrams, with all the preprocessing steps applied to our dataset.
+
+```{r}
+bigrams <- tokens(speeches_corpus, remove_punct = TRUE, 
+                                          remove_symbols = TRUE, remove_numbers = TRUE) %>% 
+                            tokens_remove(our_stopwords) %>%
+                            tokens_wordstem() %>%
+                            tokens_ngrams(n = c(2)) %>% 
+                            dfm() %>% 
+                            dfm_tolower() %>% 
+                            dfm_trim(min_termfreq = 5, min_docfreq = 0.0025, docfreq_type = "prop")
+bigrams
+```
+
+Now, we can plot the bigram length of each document and see the changes in comparison with all words:
+
+```{r results='hide'}
+bigram_ntokens <- ntoken(bigrams)
+data.frame(bigram_ntokens) %>% ggplot(aes(bigram_ntokens)) + geom_histogram() + xlab('Number of bigrams')
+```
+Finally, we plot the final bigram word cloud, where we have reduced the maximmum number of bigrams to plot, since we saw in the above chart that that the X-axis (number of bigrams) was reduced to a maximmum value of 40.
+
+```{r warning=FALSE}
+textplot_wordcloud(bigrams, random_order = FALSE, rotation = 0.25, 
+    color = RColorBrewer::brewer.pal(9, "Set2"),max_words =40,max_size = 3)
+```
+
+# Structural Topic Model (STM)
+
+## Defining the STM
+
+Following, we will run a structural topic model for this created corpus, using the gender variable as the topic-prevalence argument and setting $K=20$ as the number of topics. With the stm() function that computes this topic modelling, we will obtain $K$ topics which contain the corresponding words that are most related with each other, as we can see in the graph below:
+
+```{r, results='hide'}
+stm_speeches <- stm(documents=dfm_speeches, prevalence = ~gender, 
+                    K = 20, seed=123)
+```
+
+## Plotting the results
+```{r, fig.height=6, fig.width=6}
+plot(x=stm_speeches, type = 'summary', n=5)
+```
+
+For further analyze of each topic and the words it contains, we can show the four different types of word weightings that are used to assing words to each topic: highest probability (most probable words to appear), FREX (both frequent and exclusive), lift and score (from two other popular text mining packages).
+
+```{r}
+labelTopics(stm_speeches)
+```
+## Top 3 documents per topic
+
+In order to find the top three documents associated with each topic, we will use the plotQuote() function, in which we get an image with the top 3 original documents that are mostly related to each topic. We could also use the findThoughts() function (which we have mantained in the coding), but it displays the top 3 documents for each topic all together, therefore having a very ugly visualization display. Hence, we will directly use plotQuote() and nicely display the results, as below:
+
+```{r fig.height=9, fig.width=9}
+top3_docs <- findThoughts(model=stm_speeches,texts = speeches_corpus)
+for (i in 1:20) {
+  plotQuote(speeches_corpus[order(stm_speeches$theta[,i], decreasing = T)[1:3]], width = 150, 
+          main = paste('topic: ', i))
+}
+```
+
+As we can see, if we check each topic and its most relatable words, we will find that the texts are in correspondance with their found associated topics. 
+
+## Topic comparison between men and women
+
+
+
+Finally, we can check on which topics are women, on average, more active than men. In order to do that, we will plot the results provided by estimateEffect. Among the many parameters we can fix, the most important one is the method used to plot; we will use "difference", since it clearly displays the comparison between men and women for each topic. By setting the first covariate to 'men' and the second to 'female', by taking the reference point at 0, each topic will be moved towards the right (if men are more active than women for that topic) or towards the left (if woman are more active than men). Furthermore, we can check this criterion by looking at the sign of the estimate value in the summary of the computed variable for the estimateEffect(). Since it displays the effect for men (gendermale), when the line is moved towards the right, the estimate value will be positive. Otherwise, it will be negative when the line is moved towards the left. Let's show the results, so we can verify them.
+
+```{r}
+gender_effect <- estimateEffect(formula = ~gender, stmobj = stm_speeches,metadata = 
+                                  docvars(dfm_speeches))
+summary(gender_effect)
+```
+
+
+```{r, fig.height=6, fig.width=14}
+plot.estimateEffect(x=gender_effect,covariate = 'gender', model=stm_speeches, method = 'difference',
+                   cov.value1 = 'male', cov.value2 = 'female', labeltype = 'custom', custom.labels = c('1: M vs W','2: M vs W','3: M vs W','4: M vs W','5: M vs W','6: M vs W','7: M vs W','8: M vs W','9: M vs W','10: M vs W','11: M vs W','12: M vs W','13: M vs W','14: M vs W','15: M vs W','16: M vs W', '17: M vs W', '18: M vs W', '19: M vs W','20: M vs W'),
+                    xlab='Proportion',ylab = 'Topic',main='Proportion of topics per gender', n=3,width = 100)
+```
+
+As we can see, the topics in which women are more active than men, the estimate values are, in fact, negative, while the ones where men are more active than women have positive estimate values. 
+
+
